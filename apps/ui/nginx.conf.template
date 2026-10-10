@@ -22,6 +22,15 @@ server {
     proxy_busy_buffers_size 64k;
     large_client_header_buffers 4 32k;
 
+    # Docker's embedded DNS. Without a resolver, every `proxy_pass http://<service>` below is resolved
+    # once, when nginx starts, and the address is kept forever - so replacing the upstream container
+    # (a redeploy, a crash, a new image) leaves this server proxying to an address nothing answers on,
+    # which reaches the browser as a 502 with an nginx error page where it expected JSON. Naming the
+    # upstream through a variable forces a lookup per request instead, so the next deployment of the
+    # API is picked up without redeploying this one.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $api_upstream "http://${API_UPSTREAM}";
+
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
@@ -58,7 +67,7 @@ server {
     # only as a fallback for environments that need it; new call sites must use
     # VITE_API_URL directly.
     location /v1/ {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -78,7 +87,7 @@ server {
     # this, /llms.txt falls through to the SPA and answers 200 with the app shell, which
     # an agent may then try to parse as llms.txt. A 404 would be less misleading.
     location = /llms.txt {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -92,7 +101,7 @@ server {
     # duplicated: the API generates it from its own environment, so there is one
     # definition and an alpha deployment still advertises its own endpoints.
     location = /.well-known/ai-catalog.json {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -102,7 +111,7 @@ server {
     }
 
     location /.well-known/oauth- {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -115,7 +124,7 @@ server {
     # well-known PostHog proxy path names, so events and feature flags are split - a
     # filter-list hit on one leaves the other working.
     location /rs/ {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -125,7 +134,7 @@ server {
     }
 
     location /flags/ {
-        proxy_pass http://${API_UPSTREAM};
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
