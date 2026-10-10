@@ -36,6 +36,22 @@ WORKDIR /app
 
 COPY --from=builder /app/apps/api/dist ./dist
 
+# The migrations ride along with the server so a deployment can bring its own database up to date before
+# serving it (see docker-entrypoint.sh). They come from the repo rather than from the workspace install:
+# `prisma migrate deploy` needs the schema, its migrations, and a config, and the workspace's own
+# packages/db/prisma.config.ts pulls in the whole workspace through `./src/env`.
+COPY packages/db/prisma ./prisma
+COPY deploy/migrator.config.ts ./prisma.config.ts
+COPY apps/api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# An explicit manifest, not `npm init -y`: the install needs one, and `"type": "module"` states what the
+# ESM bundle in dist/ already is, so Node never has to detect it. Prisma is installed into the image's
+# own workspace rather than globally because the config above imports "prisma/config", which Node
+# resolves from the config's directory.
+RUN printf '{"name":"autonoma-api","private":true,"type":"module"}\n' > package.json \
+    && npm install prisma@7.9.0 \
+    && chmod 755 /usr/local/bin/docker-entrypoint.sh
+
 ENV NODE_ENV=production
 # node-caged alpine images ship no unprivileged user (unlike node:alpine),
 # so create one to match the jobs' Dockerfiles.
@@ -43,4 +59,5 @@ RUN adduser -D -u 1000 node
 USER node
 EXPOSE 4000
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "--enable-source-maps", "dist/index.js"]
