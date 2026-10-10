@@ -20,7 +20,9 @@ export function createModelSession(): ModelSession {
     }
     return openModelSession({
         openaiApiKey: env.OPENAI_API_KEY,
+        openAiBaseUrl: env.OPENAI_BASE_URL,
         classifierModelId: env.INVESTIGATION_CLASSIFIER_MODEL,
+        reporterModelId: env.INVESTIGATION_REPORTER_MODEL,
         impactModelId: env.INVESTIGATION_IMPACT_MODEL,
         videoModelId: env.INVESTIGATION_VIDEO_MODEL,
     });

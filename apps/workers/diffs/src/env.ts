@@ -18,9 +18,16 @@ export const env = createEnv({
         // without it: createModelSession throws at call time instead, failing one analysis run rather than the
         // whole worker. The OpenRouter/Gemini/Groq keys are read by @autonoma/ai from its own env.
         OPENAI_API_KEY: z.string().min(1).optional(),
+        // Optional base URL of an OpenAI-compatible endpoint. Set it to point the analysis pipeline's OpenAI
+        // capabilities (classifier, reporter, impact) at that endpoint instead of api.openai.com; it is
+        // authenticated with the OPENAI_API_KEY above, the convention the OpenAI SDK holds for this variable.
+        // The OPENAI_COMPATIBLE_* variables of @autonoma/ai are reserved for the shared registry's custom
+        // entries and do not configure this worker's pipeline.
+        OPENAI_BASE_URL: z.url().optional(),
         // Optional rather than defaulted: the model session owns each capability's default, and a `.default()`
         // here would be a second copy of it.
         INVESTIGATION_CLASSIFIER_MODEL: z.string().optional(),
+        INVESTIGATION_REPORTER_MODEL: z.string().optional(),
         INVESTIGATION_IMPACT_MODEL: z.string().optional(),
         INVESTIGATION_VIDEO_MODEL: z.string().optional(),
         // Optional Loki base URL for the classifier's get_app_logs tool (e.g. http://loki.autonoma.app:3100).

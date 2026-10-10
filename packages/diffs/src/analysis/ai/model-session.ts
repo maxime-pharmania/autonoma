@@ -10,6 +10,7 @@ import {
     ModelRegistry,
     OPENROUTER_MODEL_ENTRIES,
     type VideoModel,
+    zeroCostFunction,
 } from "@autonoma/ai";
 
 /**
@@ -30,6 +31,13 @@ export type InvestigationModelName = "smart-video" | "classifier" | "reporter" |
 
 export interface InvestigationModelConfig {
     openaiApiKey: string;
+    /**
+     * Base URL of an OpenAI-compatible endpoint serving the reasoning capabilities (classifier, reporter,
+     * impact). Absent leaves them on api.openai.com - the default, unchanged behavior. Set it (with the key
+     * above) to route those capabilities at a self-hosted endpoint, which speaks chat-completions rather than
+     * the OpenAI-only Responses API.
+     */
+    openAiBaseUrl?: string;
     /** Override the classifier model id (default gpt-5.6-luna). */
     classifierModelId?: string;
     /** Override the Reporter model id (default gpt-5.6-terra - the stronger vision+reasoning tier). */
@@ -89,7 +97,8 @@ const IMPACT_MODELS: Record<string, ModelEntry> = {
 /**
  * Native-OpenAI models, keyed by id. Each entry declares its API surface and pricing together; add
  * an entry (or update its rate) when a model is swapped in or its published price changes. Prices are USD per
- * 1M tokens. Every native-OpenAI capability key resolves one id from here.
+ * 1M tokens. The table covers the ids whose API surface and price we know; an id absent from it still resolves
+ * (see {@link nativeEntry}).
  */
 const NATIVE_OPENAI_MODELS: Record<string, NativeOpenAIModel> = {
     "gpt-5.5": {
@@ -110,17 +119,16 @@ const NATIVE_OPENAI_MODELS: Record<string, NativeOpenAIModel> = {
  * Open a metered model session. Reuses @autonoma/ai's ModelRegistry (providers, middleware, monitoring,
  * cost tracking) for the shared OpenRouter-routed vision models, and registers LOCAL native-OpenAI entries
  * for the reasoning capabilities (analysis-specific, so they stay out of the shared registry). The OpenAI
- * key is injected; OpenRouter/Gemini/Groq keys are read by @autonoma/ai from its own env.
+ * key is injected; OpenRouter/Gemini/Groq keys are read by @autonoma/ai from its own env. When
+ * {@link InvestigationModelConfig.openAiBaseUrl} is set, the reasoning capabilities are served by that
+ * OpenAI-compatible endpoint instead of api.openai.com.
  */
 export function openModelSession(config: InvestigationModelConfig): ModelSession {
-    const openai = createOpenAI({ apiKey: config.openaiApiKey });
-    const classifierEntry = resolveNativeEntry(
-        openai,
-        config.classifierModelId ?? DEFAULT_CLASSIFIER_MODEL,
-        "classifier",
-    );
-    const reporterEntry = resolveNativeEntry(openai, config.reporterModelId ?? DEFAULT_REPORTER_MODEL, "reporter");
-    const impactEntry = resolveImpactEntry(openai, config.impactModelId ?? DEFAULT_IMPACT_MODEL);
+    const openai = createOpenAI({ apiKey: config.openaiApiKey, baseURL: config.openAiBaseUrl });
+    const classifierEntry = nativeEntry(openai, config.classifierModelId ?? DEFAULT_CLASSIFIER_MODEL);
+    const reporterEntry = nativeEntry(openai, config.reporterModelId ?? DEFAULT_REPORTER_MODEL);
+    const impactModelId = config.impactModelId ?? DEFAULT_IMPACT_MODEL;
+    const impactEntry = IMPACT_MODELS[impactModelId] ?? nativeEntry(openai, impactModelId);
 
     const registry = new ModelRegistry<InvestigationModelName>({
         models: {
@@ -139,32 +147,24 @@ export function openModelSession(config: InvestigationModelConfig): ModelSession
     };
 }
 
-/** Resolve one native-OpenAI capability key to a {@link ModelEntry}, throwing a clear error on an unknown id. */
-function resolveNativeEntry(openai: OpenAIProvider, modelId: string, capability: string): ModelEntry {
-    const entry = nativeEntry(openai, modelId);
-    if (entry == null) {
-        throw new Error(
-            `Unknown ${capability} model id "${modelId}". Valid ids: ${Object.keys(NATIVE_OPENAI_MODELS).join(", ")}`,
-        );
-    }
-    return entry;
-}
-
-function resolveImpactEntry(openai: OpenAIProvider, modelId: string): ModelEntry {
-    const entry = IMPACT_MODELS[modelId] ?? nativeEntry(openai, modelId);
-    if (entry == null) {
-        const validIds = [...Object.keys(IMPACT_MODELS), ...Object.keys(NATIVE_OPENAI_MODELS)];
-        throw new Error(`Unknown impact model id "${modelId}". Valid ids: ${validIds.join(", ")}`);
-    }
-    return entry;
-}
-
-function nativeEntry(openai: OpenAIProvider, modelId: string): ModelEntry | undefined {
+/**
+ * Resolve one native-OpenAI capability key to a {@link ModelEntry}. A known id carries its API surface and
+ * published price; an id the table does not know resolves to chat-completions at zero cost rather than
+ * throwing, because an OpenAI-compatible endpoint exposes ids we cannot tabulate and the Responses API is
+ * OpenAI-specific while a compatible endpoint speaks chat-completions. NATIVE_OPENAI_MODELS stays the table of
+ * the ids whose API surface and price we know.
+ */
+function nativeEntry(openai: OpenAIProvider, modelId: string): ModelEntry {
     const model = NATIVE_OPENAI_MODELS[modelId];
-    if (model == null) return undefined;
+    if (model != null) {
+        return {
+            createModel: () => model.createModel(openai),
+            pricing: model.pricing,
+        };
+    }
     return {
-        createModel: () => model.createModel(openai),
-        pricing: model.pricing,
+        createModel: () => openai.chat(modelId),
+        pricing: zeroCostFunction,
     };
 }
 
