@@ -8,6 +8,14 @@ import { z } from "zod";
 export const env = createEnv({
     extends: [loggerEnv, dbEnv, aiEnv, storageEnv],
     server: {
+        /**
+         * Serve engine model slots from the OpenAI-compatible endpoint (`OPENAI_COMPATIBLE_BASE_URL` /
+         * `OPENAI_COMPATIBLE_API_KEY`, inherited from `@autonoma/ai/env`) instead of their built-in models, as
+         * a comma-separated list of `slot=modelId` pairs - e.g. `smart-visual=my-vl`. Unset leaves every slot on
+         * its built-in model. The `pointer` slot exists on web only, so naming it here is ignored; see the
+         * engine README for the slot list.
+         */
+        OPENAI_COMPATIBLE_MODEL_SLOTS: z.string().optional(),
         APPIUM_HOST: z.string().optional(),
         APPIUM_PORT: z.string().optional(),
         APPIUM_MJPEG_PORT: z.string().optional(),

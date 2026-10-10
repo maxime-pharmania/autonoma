@@ -1,9 +1,9 @@
 import "dotenv/config";
 import { CostCollector } from "@autonoma/ai";
-import { LocalRunner, createEngineModelRegistry, printCostSummary } from "@autonoma/engine";
+import { LocalRunner, createEngineModelRegistry, parseEngineModelOverrides, printCostSummary } from "@autonoma/engine";
 import { setScreenshotConfig } from "@autonoma/image";
 import { logger as rootLogger } from "@autonoma/logger";
-import { type MobileApplicationData, type MobileContext, MobileInstaller } from "../../platform";
+import { type MobileApplicationData, type MobileContext, MobileInstaller, env } from "../../platform";
 import { type MobileCommandSpec, createMobileAgentFactory } from "../mobile-agent";
 
 const DEFAULT_RESOLUTION = { width: 1440, height: 2560 };
@@ -22,7 +22,9 @@ async function main(testCasePath: string) {
     try {
         const runner = new LocalRunner<MobileCommandSpec, MobileApplicationData, MobileContext>({
             installer,
-            executionAgentFactory: createMobileAgentFactory(createEngineModelRegistry(costCollector)),
+            executionAgentFactory: createMobileAgentFactory(
+                createEngineModelRegistry(costCollector, parseEngineModelOverrides(env.OPENAI_COMPATIBLE_MODEL_SLOTS)),
+            ),
             eventHandlers: {
                 beforeStep: async () => {},
                 attempt: async () => {},

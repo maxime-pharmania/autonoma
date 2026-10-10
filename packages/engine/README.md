@@ -86,6 +86,35 @@ What the LLM sees lives on the matching `CommandTool` (`execution-agent/agent/to
 
 `LocalRunner` extends this for local development - loads test cases from markdown files and saves artifacts to disk.
 
+## Model Slots
+
+Each platform registry serves a fixed set of model **slots**, listed once in `ENGINE_MODEL_SLOT_IDS`:
+
+| Slot | Served by | Drives |
+|------|-----------|--------|
+| `fast-visual` | web + mobile | visual condition checks (scroll waits) |
+| `smart-visual` | web + mobile | agent loop, assert, text extraction, mobile grounding |
+| `fast-text` | web + mobile | assertion splitting |
+| `pointer` | web only | grounding (click / type coordinates) |
+
+`createEngineModelRegistry(costCollector?, overrides?)` (mobile) and `createWebEngineModelRegistry(costCollector?, overrides?)` (web) accept optional per-slot overrides of type `EngineModelSlotOverrides`. An override is any `ModelEntry`; `createCustomModelEntry(modelId)` from `@autonoma/ai` builds one served by the OpenAI-compatible endpoint. Mobile serves no `pointer` slot, so a `pointer` override passed to the mobile factory is ignored rather than rejected. Slots left out of the overrides keep their built-in model.
+
+Deployments drive the overrides from one variable, parsed by `parseEngineModelOverrides` at each entry point:
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_COMPATIBLE_MODEL_SLOTS` | Comma-separated `slot=modelId` pairs - e.g. `smart-visual=my-vl,pointer=my-ground`. Optional: unset (or empty) leaves every slot on its built-in model. |
+
+The endpoint itself is `OPENAI_COMPATIBLE_BASE_URL` / `OPENAI_COMPATIBLE_API_KEY` from [`@autonoma/ai/env`](../ai/README.md#environment-variables):
+
+```bash
+OPENAI_COMPATIBLE_BASE_URL=http://vllm.internal:8000/v1
+OPENAI_COMPATIBLE_API_KEY=optional-api-key
+OPENAI_COMPATIBLE_MODEL_SLOTS=smart-visual=my-vl,pointer=my-ground
+```
+
+A malformed value throws instead of being skipped, and the error names the variable, the offending entry and the valid slots. A slot listed twice keeps the last assignment. Overrides are priced at zero and are not video-capable, since a run recording must never be handed to a model whose video support is unknown - see [`@autonoma/ai`](../ai/README.md#custom-endpoints).
+
 ## Extending for a New Platform
 
 1. Implement all driver interfaces using your platform's SDK.

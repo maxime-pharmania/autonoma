@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { CostCollector } from "@autonoma/ai";
 import { db } from "@autonoma/db";
-import { GenerationPersister, createEngineModelRegistry } from "@autonoma/engine";
+import { GenerationPersister, createEngineModelRegistry, parseEngineModelOverrides } from "@autonoma/engine";
 import { setScreenshotConfig } from "@autonoma/image";
 import { logger as rootLogger } from "@autonoma/logger";
 import { S3Storage } from "@autonoma/storage";
-import { MobileInstaller } from "../../platform";
+import { MobileInstaller, env } from "../../platform";
 import { type MobileCommandSpec, createMobileAgentFactory } from "../mobile-agent";
 import { MobileGenerationAPIRunner } from "./mobile-generation-api-runner";
 
@@ -42,7 +42,10 @@ export async function runMobileGenerationJob(testGenerationId: string) {
         if (architecture === "WEB") throw new Error("Web architecture is not supported for mobile generation");
 
         const costCollector = new CostCollector();
-        const models = createEngineModelRegistry(costCollector);
+        const models = createEngineModelRegistry(
+            costCollector,
+            parseEngineModelOverrides(env.OPENAI_COMPATIBLE_MODEL_SLOTS),
+        );
         installer = MobileInstaller.fromEnv(architecture, testGenerationId);
 
         runner = new MobileGenerationAPIRunner({
