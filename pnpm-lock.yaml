@@ -1327,6 +1327,9 @@ importers:
       '@ai-sdk/groq':
         specifier: 'catalog:'
         version: 4.0.24(zod@4.3.6)
+      '@ai-sdk/openai-compatible':
+        specifier: 'catalog:'
+        version: 3.0.25(zod@4.3.6)
       '@autonoma/agent-core':
         specifier: workspace:*
         version: link:../agent-core
@@ -2511,6 +2514,12 @@ packages:
 
   '@ai-sdk/groq@4.0.24':
     resolution: {integrity: sha512-b4Ef0lkEfeKi2PdurFQlgPTwuCH0Ww4vyobl7izGqorFtHhJ7aErNii6vLSs31aTybOHrnAG9rXT7MMWIwmvsg==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@3.0.25':
+    resolution: {integrity: sha512-6NMHwYsjF8QQ8sKEnC6tt9w1z87Z0XwKgOGe1ZB48SwH+HvFEHsn8nCEvKML3MUwRtVu0mxRG08FTjXmew/ELA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -12237,6 +12246,12 @@ snapshots:
       zod: 4.3.6
 
   '@ai-sdk/groq@4.0.24(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.6
+      '@ai-sdk/provider-utils': 5.0.23(zod@4.3.6)
+      zod: 4.3.6
+
+  '@ai-sdk/openai-compatible@3.0.25(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.6
       '@ai-sdk/provider-utils': 5.0.23(zod@4.3.6)

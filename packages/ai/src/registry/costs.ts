@@ -2,6 +2,13 @@ import type { ModelUsage } from "./usage";
 
 export type CostFunction = (usage: ModelUsage) => number;
 
+/**
+ * Pricing for a model with no per-token rate to attribute: a self-hosted or custom endpoint, where the spend is
+ * the operator's own compute. Unlike the functions below it never reads usage, so an endpoint that omits usage
+ * from its responses still meters cleanly instead of throwing on every call.
+ */
+export const zeroCostFunction: CostFunction = () => 0;
+
 interface SimplePricing {
     inputCostPerM: number;
     outputCostPerM: number;

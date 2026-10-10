@@ -1,8 +1,12 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createGroq } from "@ai-sdk/groq";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { env } from "../env";
 import type { LanguageModel } from "./model-registry";
+import { resolveOpenAiCompatibleConfig } from "./openai-compatible-config";
+
+export type OpenAiCompatibleProvider = ReturnType<typeof createOpenAICompatible>;
 
 /**
  * The minimal provider surface {@link LLMProvider} relies on: a `languageModel` factory. We only
@@ -45,3 +49,14 @@ export const groqProvider = new LLMProvider(() => createGroq({ apiKey: env.GROQ_
 export const googleProvider = new LLMProvider(() => createGoogleGenerativeAI({ apiKey: env.GEMINI_API_KEY }));
 
 export const openRouterProvider = new LLMProvider(() => createOpenRouter({ apiKey: env.OPENROUTER_API_KEY }));
+
+/**
+ * An endpoint that speaks the OpenAI chat-completions API. Lazy like the providers above, so a deployment that
+ * never builds a custom model entry never has to configure one, and the failure lands on the run that asked for
+ * a custom model rather than on import.
+ */
+export const openAiCompatibleProvider = new LLMProvider<OpenAiCompatibleProvider>(() => {
+    const { baseURL, apiKey } = resolveOpenAiCompatibleConfig();
+
+    return createOpenAICompatible({ name: "openai-compatible", baseURL, apiKey });
+});

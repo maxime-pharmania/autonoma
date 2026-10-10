@@ -11,7 +11,7 @@ The tool-loop agent abstraction (`AgentLoop`, `Agent`, `AgentTool`, `ReportResul
 | Export Path               | Description                                                                                                                                                                                                    |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@autonoma/ai`            | Core primitives: registry, `ObjectGenerator`, `TextGenerator`, video, text utilities, the AI SDK message types the API speaks in, plus re-exported agent + compaction from `@autonoma/agent-core`. No `sharp`. |
-| `@autonoma/ai/env`        | Validated environment config (`GROQ_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`)                                                                                                                              |
+| `@autonoma/ai/env`        | Validated environment config (`GROQ_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`)                                                               |
 | `@autonoma/ai/evaluation` | Generic AI evaluation framework for benchmarking accuracy                                                                                                                                                      |
 
 ## Directory Structure
@@ -54,6 +54,24 @@ const model = registry.getModel({
     reasoning: "low",
 });
 ```
+
+### Custom Endpoints
+
+A deployment can serve any slot from its own endpoint, as long as that endpoint speaks the OpenAI chat-completions API (vLLM, LiteLLM, Ollama, TGI, a gateway). `createCustomModelEntry(modelId)` builds a registry entry on `OPENAI_COMPATIBLE_BASE_URL` / `OPENAI_COMPATIBLE_API_KEY`:
+
+```ts
+import { ModelRegistry, MODEL_ENTRIES, createCustomModelEntry } from "@autonoma/ai";
+
+const registry = new ModelRegistry({
+    models: {
+        "smart-visual": createCustomModelEntry("my-vision-model"),
+        // everything not overridden stays on its built-in entry
+        "fast-text": MODEL_ENTRIES.GPT_OSS_120B,
+    },
+});
+```
+
+Two properties are deliberate. A custom entry is priced at **zero** (`zeroCostFunction`), because the endpoint is the operator's own compute and it may not report token usage at all. And it declares **no `createUploader`**, so it is not video-capable: `getVideoModel` throws `NotAVideoModelError` rather than handing a recording to an endpoint whose support for a `video_url` part is unknown, where a dropped video reads as confident evidence that nothing was on screen. Keep any video capability on its built-in entry.
 
 ### Reasoning Effort
 
@@ -185,11 +203,13 @@ const { model, uploader } = registry.getVideoModel(
 
 Defined in `src/env.ts` using `@t3-oss/env-core`:
 
-| Variable             | Description               |
-| -------------------- | ------------------------- |
-| `GROQ_KEY`           | API key for Groq provider |
-| `GEMINI_API_KEY`     | API key for Google Gemini |
-| `OPENROUTER_API_KEY` | API key for OpenRouter    |
+| Variable                     | Description                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `GROQ_KEY`                   | API key for Groq provider                                                                                         |
+| `GEMINI_API_KEY`             | API key for Google Gemini                                                                                         |
+| `OPENROUTER_API_KEY`         | API key for OpenRouter                                                                                            |
+| `OPENAI_COMPATIBLE_BASE_URL` | Base URL of an OpenAI-compatible endpoint (e.g. `http://localhost:8000/v1`). Required only to build a custom entry |
+| `OPENAI_COMPATIBLE_API_KEY`  | API key for that endpoint. Optional - a locally hosted endpoint usually needs none                                |
 
 ## Architecture Notes
 
@@ -198,3 +218,4 @@ Defined in `src/env.ts` using `@t3-oss/env-core`:
 - Cost and usage are tracked via `CostCollector`: pass one to `ModelRegistry.getModel(options, costCollector)` to capture per-call records (tokens, cost, tag), then aggregate `getRecords()` for totals.
 - Video capability is declared by the registry entry, not guessed from the provider: an entry that can take video declares a `createUploader`, and `ModelRegistry.getVideoModel` hands back the model paired with that uploader (throwing `NotAVideoModelError` otherwise). Google entries use the Files-API `VideoProcessor`; OpenRouter-routed entries use `InlineMp4VideoUploader`, which returns the mp4 as base64 for a `file` part. Acquiring the model IS the capability check - there is no second runtime guard.
 - A video-capable model is coupled to its uploader on its `MODEL_ENTRIES` entry (`createUploader`); `ModelRegistry.getVideoModel` hands consumers the `{ model, uploader }` pair so the two are chosen together, never separately.
+- A custom endpoint is a provider detail, not a registry concept: `createCustomModelEntry` returns an ordinary `ModelEntry`, so a consumer swaps one slot at a time and everything else (middleware, cost collection, monitoring) is unchanged.

@@ -29,6 +29,10 @@ catalog:
   '@ai-sdk/google': ^4.0.36
   '@ai-sdk/groq': ^4.0.24
   '@ai-sdk/openai': ^4.0.33
+  # Pinned exactly, unlike its neighbours: 3.0.26 and up require a newer @ai-sdk/provider, which would resolve
+  # to a second physical copy of the package and make the provider's LanguageModel structurally incompatible
+  # with the one `ai` speaks. 3.0.25 is the last release built against this repo's provider 4.0.6.
+  '@ai-sdk/openai-compatible': 3.0.25
   '@aws-sdk/client-ec2': ^3.1106.0
   '@aws-sdk/client-kms': ^3.1105.0
   '@aws-sdk/client-pricing': ^3.1106.0
