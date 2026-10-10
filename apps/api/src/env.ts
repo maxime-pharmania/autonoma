@@ -142,11 +142,18 @@ export const env = createEnv({
         // OpenRouter key, so the operator spends their own money rather than becoming a free gateway for
         // anyone else. Defaults off, so the invariant still holds where it was written for.
         LLM_PROXY_ALLOW_UNMETERED: z.stringbool().default(false),
-        // Comma-separated allowlist of OpenRouter model ids the managed LLM proxy
-        // (planner CLI) may request. Defaults to the single model the planner uses
-        // (see LLM_PROXY_DEFAULT_MODELS in llm-proxy-http.router.ts). Set to
-        // widen/narrow without a deploy. The proxy is a free, credit-metered gateway,
-        // so the allowlist is the primary guard against it being used as a general LLM API.
+        // Upstream the LLM proxy forwards to, and the key it authenticates with. Both optional and both
+        // defaulted to OpenRouter plus this deployment's OpenRouter key, so the hosted product is
+        // unchanged: a self-host sets these to point the planner at its own OpenAI-compatible gateway,
+        // and the OpenRouter attribution headers/metering fields are then simply ignored upstream.
+        LLM_PROXY_UPSTREAM_URL: z.string().url().optional(),
+        LLM_PROXY_UPSTREAM_API_KEY: z.string().min(1).optional(),
+        // Comma-separated allowlist of model ids the managed LLM proxy may request. Defaults to the
+        // single model the planner uses (see LLM_PROXY_DEFAULT_MODELS in llm-proxy-http.router.ts). Set
+        // to widen/narrow without a deploy - and to name a self-hosted gateway's own ids, which is what
+        // a deployment pointing LLM_PROXY_UPSTREAM_URL elsewhere has to do. The proxy is a
+        // credit-metered gateway, so the allowlist is the primary guard against it being used as a
+        // general LLM API.
         LLM_PROXY_ALLOWED_MODELS: z.string().optional(),
         // Abuse cap: the most credits a never-paid org may spend through the
         // managed LLM proxy, out of its free-start grant. A farmed free account

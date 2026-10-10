@@ -12,6 +12,13 @@ const logger = rootLogger.child({ name: "llmProxyHttpRouter" });
 
 const OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+// Where this proxy sends its requests, and with which key. Defaults to OpenRouter with this
+// deployment's OpenRouter key; a self-host that runs its own gateway sets both instead, so the planner
+// spends that operator's key on their own endpoint. OpenRouter's `HTTP-Referer`/`X-Title` attribution
+// headers and its `usage.cost` accounting are meaningless there and are simply ignored by the upstream.
+const upstreamUrl = env.LLM_PROXY_UPSTREAM_URL ?? OPENROUTER_CHAT_COMPLETIONS_URL;
+const upstreamApiKey = env.LLM_PROXY_UPSTREAM_API_KEY ?? env.OPENROUTER_API_KEY;
+
 // Upper bound on a single upstream request. Bounds a hung/stalled OpenRouter
 // connection (which would otherwise hold the request and the detached meter
 // drain open indefinitely) while staying well above any real planner call.
@@ -118,7 +125,7 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
     const { organizationId } = c.var.user;
     logger.info("LLM proxy request received", { organizationId });
 
-    const apiKey = env.OPENROUTER_API_KEY;
+    const apiKey = upstreamApiKey;
     if (apiKey == null) {
         logger.error("LLM proxy is unconfigured - OPENROUTER_API_KEY is not set");
         return c.json({ error: "llm_proxy_unconfigured" }, 503);
@@ -155,7 +162,7 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
 
     let upstream: Response;
     try {
-        upstream = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
+        upstream = await fetch(upstreamUrl, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
