@@ -183,12 +183,18 @@ export function createApiApp() {
     // enabled AND billing is on: metering depends on billing, so requiring both
     // makes "the proxy is always metered" an invariant and fails closed - a
     // billing-disabled environment can never become a free, unmetered gateway.
+    // LLM_PROXY_ALLOW_UNMETERED is the deliberate exception, for a self-host with no Stripe account to
+    // meter against: it spends that deployment's own OpenRouter key, so there is no gateway to abuse.
 
-    if (env.LLM_PROXY_ENABLED && env.STRIPE_ENABLED) {
+    const llmProxyMetered = env.STRIPE_ENABLED;
+    const llmProxyAllowed = env.LLM_PROXY_ENABLED && (llmProxyMetered || env.LLM_PROXY_ALLOW_UNMETERED);
+
+    if (llmProxyAllowed) {
         app.route("/v1/llm-proxy", llmProxyHttpRouter);
-    } else if (env.LLM_PROXY_ENABLED && !env.STRIPE_ENABLED) {
+        logger.info("LLM proxy mounted", { extra: { metered: llmProxyMetered } });
+    } else if (env.LLM_PROXY_ENABLED) {
         logger.error(
-            "LLM proxy NOT mounted: LLM_PROXY_ENABLED=true but STRIPE_ENABLED=false. Enable billing so usage can be metered.",
+            "LLM proxy NOT mounted: LLM_PROXY_ENABLED=true but STRIPE_ENABLED=false. Enable billing so usage can be metered, or set LLM_PROXY_ALLOW_UNMETERED=true on a self-host that spends its own key.",
         );
     } else {
         logger.info("LLM proxy routes disabled (LLM_PROXY_ENABLED=false)");

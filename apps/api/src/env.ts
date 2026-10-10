@@ -137,6 +137,11 @@ export const env = createEnv({
         // environment with OPENROUTER_API_KEY set must NOT silently become a free,
         // unmetered LLM gateway. Metering only happens when STRIPE_ENABLED is also on.
         LLM_PROXY_ENABLED: z.stringbool().default(false),
+        // The deliberate exception to "metering depends on billing" (see the mount in app.ts), for a
+        // self-host with no Stripe account to meter against: the proxy forwards on this deployment's own
+        // OpenRouter key, so the operator spends their own money rather than becoming a free gateway for
+        // anyone else. Defaults off, so the invariant still holds where it was written for.
+        LLM_PROXY_ALLOW_UNMETERED: z.stringbool().default(false),
         // Comma-separated allowlist of OpenRouter model ids the managed LLM proxy
         // (planner CLI) may request. Defaults to the single model the planner uses
         // (see LLM_PROXY_DEFAULT_MODELS in llm-proxy-http.router.ts). Set to
