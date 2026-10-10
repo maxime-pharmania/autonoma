@@ -18,6 +18,7 @@ packages/ai/src/
 │   ├── options.ts                    # ModelOptions, reasoning effort levels
 │   ├── costs.ts                      # Cost calculation functions
 │   ├── cost-collector.ts             # Aggregated cost tracking
+│   ├── custom-model-entry.ts         # Registry entry on the OpenAI-compatible endpoint
 │   ├── usage.ts                      # Token usage tracking
 │   └── monitoring.ts                 # Logging middleware and telemetry
 ├── text/
@@ -90,15 +91,36 @@ An alternative `OPENROUTER_MODEL_ENTRIES` set routes all models through OpenRout
 
 ### Providers
 
-Three LLM provider singletons are available, each lazily initialized with their respective API key:
+Four LLM provider singletons are available, each lazily initialized with its own configuration:
 
 | Provider | SDK | Env Variable |
 |----------|-----|-------------|
 | `googleProvider` | `@ai-sdk/google` | `GEMINI_API_KEY` |
 | `groqProvider` | `@ai-sdk/groq` | `GROQ_KEY` |
 | `openRouterProvider` | `@openrouter/ai-sdk-provider` | `OPENROUTER_API_KEY` |
+| `openAiCompatibleProvider` | `@ai-sdk/openai-compatible` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY` |
 
 The `LLMProvider` class wraps each provider as a singleton - the underlying SDK instance is created on first use.
+
+### Custom Endpoints
+
+The fourth provider is the escape hatch for inference you host yourself (vLLM, LiteLLM, Ollama, TGI, a gateway). `createCustomModelEntry(modelId)` builds an ordinary `ModelEntry` on it, so a deployment swaps one slot at a time and the middleware, cost collection and monitoring around it are unchanged:
+
+```ts
+import { ModelRegistry, MODEL_ENTRIES, createCustomModelEntry } from "@autonoma/ai";
+
+const registry = new ModelRegistry({
+  models: {
+    "smart-visual": createCustomModelEntry("my-vision-model"),
+    // everything not overridden stays on its built-in entry
+    "fast-text": MODEL_ENTRIES.GPT_OSS_120B,
+  },
+});
+```
+
+Two properties are deliberate. A custom entry is priced at **zero** (`zeroCostFunction`), because the endpoint is the operator's own compute and it may not report token usage at all. And it declares **no `createUploader`**, so it is not video-capable: `getVideoModel` throws `NotAVideoModelError` rather than handing a recording to an endpoint whose support for a `video_url` part is unknown, where a dropped video would read as confident evidence that nothing was on screen. Keep any video capability on its built-in entry.
+
+The engines do this wiring for a deployment: `OPENAI_COMPATIBLE_MODEL_SLOTS` names the slots to serve from the endpoint (see [Environment Variables](/development/environment-variables/#custom-model-endpoint)).
 
 ### Reasoning Effort
 
@@ -302,7 +324,7 @@ export const MODEL_ENTRIES = {
 
 2. **Choose the right cost function.** Use `simpleCostFunction` for models without cache pricing, or `inputCacheCostFunction` for models that support input caching (adds a `cachedInputCostPerM` field).
 
-3. **Add a provider** if needed. If the model uses a provider not yet configured, add a new `LLMProvider` singleton in `providers.ts` and add the corresponding API key to `env.ts`.
+3. **Add a provider** if needed. If the model uses a provider not yet configured, add a new `LLMProvider` singleton in `providers.ts` and add the corresponding API key to `env.ts`. A model you host yourself needs neither: `createCustomModelEntry(modelId)` builds an entry on the OpenAI-compatible endpoint (`OPENAI_COMPATIBLE_BASE_URL`), and the engines select it per slot with `OPENAI_COMPATIBLE_MODEL_SLOTS` (see [Custom Endpoints](#custom-endpoints)).
 
 4. **Use the model** by referencing its key when calling `registry.getModel()`:
 

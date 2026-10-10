@@ -190,6 +190,8 @@ MY_MODEL: {
 
 **3. Use it** via `registry.getModel({ model: "MY_MODEL", tag: "my-use-case" })`.
 
+**Serving a model you host yourself?** There is no entry and no provider to add: build it with `createCustomModelEntry("my-model-id")` (`packages/ai/src/registry/custom-model-entry.ts`, see [Custom Endpoints](/architecture/ai-package/#custom-endpoints)). The engine selects it per slot from `OPENAI_COMPATIBLE_BASE_URL` with `OPENAI_COMPATIBLE_MODEL_SLOTS`, e.g. `smart-visual=my-vl`. Such an entry is priced at zero and is not video-capable, so keep anything that has to read a recording on its built-in entry.
+
 ## Running and Writing Tests
 
 Vitest is used everywhere. Every package has it installed.

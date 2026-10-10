@@ -110,6 +110,21 @@ The frontend uses Vite's `import.meta.env` and requires the `VITE_` prefix for a
 
 ---
 
+## Test Planner CLI (`apps/cli`)
+
+**Source:** `apps/cli/src/env.ts`
+
+The planner CLI calls models through Autonoma's managed LLM proxy and authorizes with `AUTONOMA_API_TOKEN` (see [Test Planner](/test-planner/)). Point it at an endpoint you host instead and it talks to that endpoint directly, with no Autonoma token involved:
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `OPENAI_COMPATIBLE_BASE_URL` | No | - | Base URL of an endpoint that speaks the OpenAI chat-completions API. When set, every model call goes straight there instead of through the managed proxy, so the run needs no Autonoma token to reach a model. |
+| `OPENAI_COMPATIBLE_API_KEY` | No | - | Key for that endpoint. Usually unnecessary for a locally hosted one. |
+
+Which endpoint serves the model does not change how the model is named: the id still comes from `--model`, else `OPENROUTER_MODEL`, else `google/gemini-3-flash-preview`.
+
+---
+
 ## Database
 
 **Source:** `packages/db/src/env.ts`
@@ -139,6 +154,32 @@ These keys are required by the execution engines (web and mobile) and any servic
 :::note
 Validation is skipped when running in Vitest (`VITEST` env var is set), so you do not need these keys to run unit tests.
 :::
+
+### Custom Model Endpoint
+
+**Source:** `packages/ai/src/env.ts` for the endpoint, `packages/engine-web/src/platform/env.ts` and `packages/engine-mobile/src/platform/env.ts` for the slot map.
+
+A deployment that runs its own inference (vLLM, LiteLLM, Ollama, TGI, a gateway) can serve the engine's model slots from that endpoint instead of the built-in providers. The endpoint must speak the OpenAI chat-completions API.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `OPENAI_COMPATIBLE_BASE_URL` | No | - | Base URL of the endpoint, e.g. `http://localhost:8000/v1`. Required only to build a custom model entry - with it unset, every slot keeps its built-in model. |
+| `OPENAI_COMPATIBLE_API_KEY` | No | - | Key for that endpoint. Often unnecessary for a locally hosted one. |
+| `OPENAI_COMPATIBLE_MODEL_SLOTS` | No | - | Comma-separated `slot=modelId` pairs serving those engine slots from the endpoint. Valid slots: `fast-visual`, `smart-visual`, `fast-text`, `pointer` (`pointer` is web-only - mobile ignores it). A slot that is not listed keeps its built-in model. |
+
+```bash
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1
+OPENAI_COMPATIBLE_MODEL_SLOTS="smart-visual=my-vl,pointer=my-ground"
+```
+
+A malformed entry - an unknown slot name, a missing `=`, an empty model id - fails the run and names `OPENAI_COMPATIBLE_MODEL_SLOTS` in the error, rather than being skipped, so a run never quietly keeps a built-in model the operator asked to replace.
+
+Each listed slot is served by `createCustomModelEntry` (`packages/ai/src/registry/custom-model-entry.ts`), which returns an ordinary registry entry built on the endpoint. Two of its properties matter when choosing what to reroute:
+
+- **It is priced at zero.** The endpoint is your own compute, so there is no published per-token rate to attribute - and the entry never reads token usage, which an endpoint that omits usage from its responses would otherwise trip over.
+- **It is not video-capable.** The entry declares no uploader, so `getVideoModel` throws `NotAVideoModelError` rather than handing a recording to an endpoint whose support for a `video_url` part is unknown, where a dropped video would read as confident evidence that nothing was on screen. Keep any capability that sends a recording (the diffs pipeline's `smart-video`, for example) on its built-in entry.
+
+With none of these variables set, nothing changes: every slot keeps the built-in model it uses today.
 
 ---
 
@@ -273,7 +314,7 @@ The mobile engine extends the AI, database, logger, and storage environments. Al
 
 **Source:** `apps/workers/diffs/src/env.ts`
 
-Diffs analysis and resolution run as Temporal activities in the `@autonoma/worker-diffs` worker. AI model keys come from the AI Services section; this worker adds the GitHub App credentials it needs to clone repositories and read PRs.
+Diffs analysis and resolution run as Temporal activities in the `@autonoma/worker-diffs` worker. AI model keys come from the AI Services section; this worker adds the GitHub App credentials it needs to clone repositories and read PRs. Its analysis capabilities (classifier, reporter, impact) are served by `api.openai.com` and authenticated with `OPENAI_API_KEY` unless `OPENAI_BASE_URL` points them elsewhere.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -281,7 +322,10 @@ Diffs analysis and resolution run as Temporal activities in the `@autonoma/worke
 | `GITHUB_APP_PRIVATE_KEY` | Yes | - | GitHub App private key, base64-encoded PEM (`cat key.pem \| base64`). |
 | `GITHUB_APP_WEBHOOK_SECRET` | Yes | - | GitHub App webhook secret for verifying events. |
 | `GITHUB_APP_SLUG` | Yes | - | GitHub App slug (URL-friendly name). |
+| `OPENAI_BASE_URL` | No | - | Base URL of an endpoint that speaks the OpenAI chat-completions API, serving the classifier, reporter and impact capabilities instead of `api.openai.com`. Authenticated with the worker's `OPENAI_API_KEY`. Unset leaves them on OpenAI. |
 | `SENTRY_DSN_WORKER_DIFFS` | No | - | Sentry DSN for the diffs worker. |
+
+Each capability keeps its own model-id override, so an endpoint's own ids are named without a deploy: `INVESTIGATION_CLASSIFIER_MODEL`, `INVESTIGATION_REPORTER_MODEL` and `INVESTIGATION_IMPACT_MODEL`. An id the model session does not tabulate is called over chat-completions.
 
 ---
 
@@ -336,6 +380,7 @@ Two things about this are easy to get wrong:
 - **Kubernetes** - Omit `NAMESPACE`. The API defaults it to `local`; only `@autonoma/k8s` needs a real one.
 - **OAuth proxying** - Omit `OAUTH_PROXY_PRODUCTION_URL` and `OAUTH_PROXY_SECRET`. Local dev signs in against its own OAuth apps.
 - **GitHub App** - Omit all `GITHUB_APP_*` variables unless you are working on GitHub integration.
+- **Custom model endpoint** - Omit `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_MODEL_SLOTS` and `OPENAI_BASE_URL`. Every model slot keeps its built-in model, and the diffs worker stays on `api.openai.com`.
 - **Temporal** - Omit `VITE_TEMPORAL_URL`. The UI hides workflow links when this is unset.
 
 **What uses defaults that just work:**
