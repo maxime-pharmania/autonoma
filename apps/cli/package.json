@@ -55,6 +55,7 @@
     },
     "dependencies": {
         "@11ty/gray-matter": "^3.0.0",
+        "@ai-sdk/openai-compatible": "catalog:",
         "@openrouter/ai-sdk-provider": "^3.0.0",
         "@t3-oss/env-core": "catalog:",
         "@trpc/client": "catalog:",

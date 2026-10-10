@@ -8,6 +8,12 @@ import { z } from "zod";
 const ENV_SCHEMA = {
     // Model id override (OpenRouter-style id, forwarded by the managed proxy).
     OPENROUTER_MODEL: z.string().optional(),
+    // An endpoint the operator hosts that speaks the OpenAI chat-completions API
+    // (vLLM, LiteLLM, Ollama, a gateway). Setting it sends every model call there
+    // instead of through the managed proxy, so calling a model needs no Autonoma
+    // token. The key is optional because a local endpoint usually needs none.
+    OPENAI_COMPATIBLE_BASE_URL: z.string().optional(),
+    OPENAI_COMPATIBLE_API_KEY: z.string().optional(),
     DATABASE_URL: z.string().optional(),
     AUTONOMA_SHARED_SECRET: z.string().optional(),
     AUTONOMA_SIGNING_SECRET: z.string().optional(),

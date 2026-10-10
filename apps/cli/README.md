@@ -92,7 +92,7 @@ npx @autonoma-ai/planner@latest --help
 --resume                  continue from where a previous run stopped
 --fresh                   discard a previous run's output and start over
 --step <name>             run a single step and stop - for debugging, not for sequencing a run
---model <id>              pick a different Autonoma-hosted model (still no key needed)
+--model <id>              pick a different model id (on your own endpoint, the id it serves)
 --slug <name>             override the output folder name under ~/.autonoma/
 ```
 
@@ -172,8 +172,8 @@ upload step. Without credentials it just leaves them on disk.
 
 ## Environment variables
 
-The command Autonoma gives you already carries these; the only one you set by hand is a token for
-a standalone run.
+The command Autonoma gives you already carries these; the ones you set by hand are a token for a
+standalone run, and `OPENAI_COMPATIBLE_BASE_URL` if you serve your own models.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -184,9 +184,31 @@ a standalone run.
 | `AUTONOMA_API_URL` | no | Point at a non-production Autonoma. Defaults to production. |
 | `AUTONOMA_DISTINCT_ID` | no | PostHog identity, so CLI events join the signup funnel. |
 | `OPENROUTER_MODEL` | no | Override the default model (an OpenRouter-style id, forwarded by the proxy). |
+| `OPENAI_COMPATIBLE_BASE_URL` | no | Serve every model from your own OpenAI-compatible endpoint instead of the managed proxy. See below. |
+| `OPENAI_COMPATIBLE_API_KEY` | no | Bearer key for that endpoint, if it needs one. |
 | `DONT_TRACK` | no | `1`/`true` disables all telemetry - events, log shipping and session replay. |
 | `AUTONOMA_DEBUG` | no | `1`/`true` prints diagnostic breadcrumbs to stderr **and** writes a full JSONL transcript to `~/.autonoma/debug/<run-id>.jsonl`. |
 | `AUTONOMA_DEBUG_FILE` | no | Write that transcript to this path instead, without the stderr noise. Independent of `DONT_TRACK` - it never leaves your machine. |
+
+### Your own model endpoint
+
+Set `OPENAI_COMPATIBLE_BASE_URL` and every model call goes to that endpoint instead of the managed
+Autonoma proxy - vLLM, LiteLLM, Ollama, a gateway, anything that speaks the OpenAI
+chat-completions API. The endpoint is your own compute, so **running the models needs no Autonoma
+credential**. Set `OPENAI_COMPATIBLE_API_KEY` only when the endpoint authenticates a bearer key.
+
+`--model` and `OPENROUTER_MODEL` still choose the id, now as your endpoint names it - the default
+stays `google/gemini-3-flash-preview`, which a self-hosted endpoint almost certainly calls
+something else, so set one.
+
+```bash
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1 OPENROUTER_MODEL=my-model \
+  npx @autonoma-ai/planner@latest
+```
+
+Everything else about a run is unchanged, uploads included: `AUTONOMA_API_TOKEN` is still what
+reaches the Autonoma API, so a run attached to an app still needs it. Only the model calls leave the
+managed path, which is also the point our API meters credits at - so they are no longer metered.
 
 ## Telemetry
 
