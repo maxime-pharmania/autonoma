@@ -45,6 +45,22 @@ const FREE_CLI_CREDIT_CAP = env.LLM_PROXY_FREE_CREDIT_CAP;
 const MAX_OUTPUT_TOKENS = env.LLM_PROXY_MAX_OUTPUT_TOKENS;
 const MAX_REQUEST_BYTES = env.LLM_PROXY_MAX_REQUEST_BYTES;
 
+// How long a streamed response may stay silent before the proxy writes an SSE keepalive comment. Overridable
+// per deployment with LLM_PROXY_SSE_KEEPALIVE_MS, `0` to disable (see resolveSseKeepaliveIntervalMs). The
+// upstream generates for minutes in thinking mode, and an intermediary in front of this proxy reaps a
+// connection that carries no bytes for long enough - observed from the other side as the upstream gateway's
+// own `499` on our call, after which the caller's SDK retries the completion we were already receiving. Well
+// under the minute-scale idle timeouts such an intermediary applies, and small enough that a client sees
+// only a handful of comments per think.
+const SSE_KEEPALIVE_DEFAULT_MS = 15_000;
+
+/**
+ * `: keepalive\n\n` - an SSE comment. Every SSE parser skips a line that starts with a colon (this proxy's
+ * own usage scan included, see captureFromSseLine), but it is still bytes on the wire, which is all an
+ * idle-timeout intermediary needs to keep the connection open.
+ */
+const SSE_KEEPALIVE_FRAME = new TextEncoder().encode(": keepalive\n\n");
+
 // Every gate refusal is a 402 so the planner CLI's error handling (which keys
 // friendly "out of credits" messaging off the 402 status) surfaces the right
 // hint; the distinct `error` code is for our own logs/analytics.
@@ -263,6 +279,9 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
     // timer is cleared as soon as the headers arrive on a streamed request, so a stalled upstream is
     // still cut off while it is silent.
     const upstreamAbort = new AbortController();
+    // Captured before the call, so the streamed relay below reports a duration comparable with the upstream
+    // gateway's own request log line - the `499 | 2m5s` this pairs with.
+    const upstreamRequestStartedAtMs = Date.now();
     const headersTimer = setTimeout(() => upstreamAbort.abort(), UPSTREAM_TIMEOUT_MS);
     try {
         upstream = await fetch(upstreamUrl, {
@@ -300,7 +319,29 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
         // mid-stream - tee keeps the source alive as long as one branch is read.
         const [clientBranch, meterBranch] = upstream.body.tee();
         void drainStreamForMetering(meterBranch, organizationId);
-        return new Response(clientBranch, {
+        // Only the client branch is relayed to the caller, and only it is wrapped: the meter branch reads
+        // the raw upstream bytes, so the keepalive cannot reach the usage scan or the deduction. The wrapper
+        // also reports, in one line, how the relay ended (see the callback below).
+        const relayedBody = relayUpstreamSseStream(
+            clientBranch,
+            { keepaliveMs: resolveSseKeepaliveIntervalMs(), startedAtMs: upstreamRequestStartedAtMs },
+            (outcome) => {
+                // One line per streamed request, on every exit. It is what separates the caller's side going
+                // away (client_cancelled: the CLI, or a tunnel in front of this API) from the upstream side
+                // going away - upstream_failed, the cut this diagnostic exists for, which reads as no relayed
+                // bytes and a duration matching the upstream gateway's own 499. The upstream's line alone
+                // cannot say whose client walked away; this one is ours to read.
+                logger.info("LLM proxy streamed response ended", {
+                    organizationId,
+                    model,
+                    durationMs: outcome.durationMs,
+                    relayedUpstreamBytes: outcome.relayedUpstreamBytes,
+                    endReason: outcome.endReason,
+                    err: outcome.error,
+                });
+            },
+        );
+        return new Response(relayedBody, {
             status: upstream.status,
             headers: {
                 "Content-Type": upstream.headers.get("content-type") ?? "text/event-stream",
@@ -318,6 +359,143 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
     });
     return new Response(rawText, { status: upstream.status, headers: { "Content-Type": "application/json" } });
 });
+
+/**
+ * How long to wait between keepalive comments, from `LLM_PROXY_SSE_KEEPALIVE_MS`. Unset, blank (what a
+ * rendered template leaves behind) or unreadable reads as the default rather than throwing on the request
+ * path; `0` disables the keepalive. Read from the environment on each request - the way
+ * LLM_PROXY_THINKING_COMPAT is - so a deployment can silence it without a redeploy.
+ */
+export function resolveSseKeepaliveIntervalMs(): number {
+    const raw = process.env.LLM_PROXY_SSE_KEEPALIVE_MS?.trim();
+    if (raw == null || raw.length === 0) return SSE_KEEPALIVE_DEFAULT_MS;
+    const parsed = z.coerce.number().int().nonnegative().safeParse(raw);
+    if (!parsed.success) {
+        logger.warn("Ignoring an unreadable LLM_PROXY_SSE_KEEPALIVE_MS - using the default keepalive interval", {
+            value: raw,
+            defaultMs: SSE_KEEPALIVE_DEFAULT_MS,
+        });
+        return SSE_KEEPALIVE_DEFAULT_MS;
+    }
+    return parsed.data;
+}
+
+/**
+ * How a streamed relay ended, and what it saw on the way - the evidence that tells a caller's own
+ * abandonment apart from a connection an intermediary cut (see the log in the streaming branch of the handler).
+ */
+export type SseRelayOutcome = {
+    /** Wall-clock ms from the upstream request to the end of the relay: the number to read against the
+     * upstream gateway's own request log line for the same call. */
+    durationMs: number;
+    /** Whether the answer had started, i.e. whether any upstream byte reached the caller. */
+    relayedUpstreamBytes: boolean;
+    /** Why the relay stopped: the upstream stream ended, it failed (a connection cut lands here), or the
+     * caller's connection went away first. */
+    endReason: "upstream_finished" | "upstream_failed" | "client_cancelled";
+    /** The failure that ended an `upstream_failed` relay, or the cancellation reason when a runtime gave
+     * one - both are what a log line needs to name the cause. */
+    error?: unknown;
+};
+
+export type SseRelayOptions = {
+    /** Keepalive interval in ms. `<= 0` writes no comment and arms no timer. */
+    keepaliveMs: number;
+    /** When this proxy started the upstream request, for `durationMs`. */
+    startedAtMs: number;
+};
+
+/**
+ * Relay a streamed upstream body to the caller, and report once how it ended.
+ *
+ * While the upstream has not produced its first byte, every `keepaliveMs` writes an SSE keepalive comment: an
+ * intermediary in front of this proxy reaps a connection that carries no bytes for long enough, and a cut
+ * reply to a long reasoning turn makes the caller's SDK retry the completion we were already receiving (see
+ * SSE_KEEPALIVE_DEFAULT_MS). The keepalive is a wrapper, never a splice: upstream bytes reach the client in
+ * order and unchanged, and a comment can only be written ahead of the first one, because that byte stops the
+ * timer before being forwarded. The timer is stopped on every exit - first byte, end of stream, upstream
+ * failure, caller cancellation - so nothing outlives the response. `keepaliveMs <= 0` arms no timer and
+ * writes no comment, which is the whole of the disabled case.
+ *
+ * `onEnd` is called exactly once, whichever way the relay stopped. It must never be the reason a relay
+ * breaks, so a throwing observer is logged and swallowed. Backpressure stays the source's: a chunk is read
+ * only as the caller consumes one.
+ */
+export function relayUpstreamSseStream(
+    source: ReadableStream<Uint8Array>,
+    options: SseRelayOptions,
+    onEnd: (outcome: SseRelayOutcome) => void,
+): ReadableStream<Uint8Array> {
+    const reader = source.getReader();
+    let relayedUpstreamBytes = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let ended = false;
+    const stopKeepalive = (): void => {
+        if (timer == null) return;
+        clearInterval(timer);
+        timer = undefined;
+    };
+    const end = (endReason: SseRelayOutcome["endReason"], error?: unknown): void => {
+        if (ended) return;
+        ended = true;
+        stopKeepalive();
+        try {
+            onEnd({
+                durationMs: Date.now() - options.startedAtMs,
+                relayedUpstreamBytes,
+                endReason,
+                error,
+            });
+        } catch (err) {
+            logger.debug("Failed to report how a streamed response ended", { err });
+        }
+    };
+    return new ReadableStream<Uint8Array>({
+        start(controller) {
+            if (options.keepaliveMs <= 0) return;
+            timer = setInterval(() => {
+                try {
+                    controller.enqueue(SSE_KEEPALIVE_FRAME);
+                } catch {
+                    // The caller cancelled between this beat firing and the callback running: `cancel`
+                    // below has already stopped us. A beat that lands too late is not worth a log line.
+                    stopKeepalive();
+                }
+            }, options.keepaliveMs);
+            // An idle connection's keepalive must never be the reason the process stays alive.
+            timer.unref();
+        },
+        async pull(controller) {
+            try {
+                const { done, value } = await reader.read();
+                if (done) {
+                    end("upstream_finished");
+                    controller.close();
+                    return;
+                }
+                // Before forwarding the byte, never after: the keepalive fills the silence ahead of real
+                // data, so a comment must never land inside the upstream flow.
+                relayedUpstreamBytes = true;
+                stopKeepalive();
+                controller.enqueue(value);
+            } catch (err) {
+                // An upstream failure - a cut connection surfaces here - or a beat racing the caller's
+                // cancellation. Either way the relay is over, and the timer must not survive it.
+                end("upstream_failed", err);
+                controller.error(err);
+            }
+        },
+        cancel(reason) {
+            // The runtimes cancel a response body when its connection goes away, so this is the caller
+            // (or whatever sits between us and it) hanging up before the upstream was done.
+            end("client_cancelled", reason);
+            // Release the upstream branch, deliberately without awaiting it: one branch of a teed body only
+            // settles once the other is cancelled too, and the meter branch keeps reading the upstream to the
+            // end on purpose (so the request still bills). Nothing here may wait on that.
+            void reader.cancel(reason).catch(() => undefined);
+        },
+    });
+}
 
 /**
  * Read an SSE stream to completion, scanning for the trailing usage chunk, then
