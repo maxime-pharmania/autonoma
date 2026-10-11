@@ -89,9 +89,12 @@ export function buildSubagentTool(
             });
 
             try {
-                await subagent.generate({
+                // Streamed for the same reason as the main loop: a silent origin gets cut by a proxy in
+                // front of the provider, while consuming the stream still runs the subagent's tool loop.
+                const stream = await subagent.stream({
                     messages: [{ role: "user", content: input.instruction }],
                 });
+                await stream.consumeStream();
                 return { findings: result?.findings ?? "Subagent did not produce findings" };
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);

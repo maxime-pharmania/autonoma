@@ -187,7 +187,14 @@ export async function runAgent<T>(
             // A zero timeout means no cap - pass no `timeout` at all rather than a
             // 0ms one, which would abort every step immediately.
             const callOptions = stepTimeout > 0 ? { timeout: { stepMs: stepTimeout } } : {};
-            let generation = await agent.generate({ messages, ...callOptions });
+            // Streamed, not `generate`: a non-streamed turn sends nothing on the wire until the model has
+            // finished, and a proxy in front of the provider cuts a silent origin off (Cloudflare answers
+            // 524 after ~100s, which a reasoning model on a large prompt legitimately exceeds). Streaming
+            // keeps bytes flowing for the whole turn, and consuming the stream is what runs the tool loop -
+            // the steps and tools still execute exactly as they do under `generate`.
+            const firstStream = await agent.stream({ messages, ...callOptions });
+            await firstStream.consumeStream();
+            let generation = { responseMessages: await firstStream.responseMessages };
 
             let nudges = 0;
             while (extractResult() === undefined && nudges < MAX_NUDGES) {
@@ -203,7 +210,9 @@ export async function runAgent<T>(
                 });
                 messages.push(...generation.responseMessages);
                 messages.push({ role: "user", content: NUDGE_PROMPT });
-                generation = await agent.generate({ messages, ...callOptions });
+                const nudgeStream = await agent.stream({ messages, ...callOptions });
+                await nudgeStream.consumeStream();
+                generation = { responseMessages: await nudgeStream.responseMessages };
             }
 
             return extractResult();

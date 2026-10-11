@@ -1,4 +1,4 @@
-import { type LanguageModel, generateText } from "ai";
+import { type LanguageModel, streamText } from "ai";
 import { AI_MAX_RETRIES } from "./model";
 
 export interface CompactionInput {
@@ -9,7 +9,10 @@ export interface CompactionInput {
 export async function compactConversation(model: LanguageModel, input: CompactionInput): Promise<string> {
     const conversationText = input.messages.map((m) => `[${m.role}]: ${m.content}`).join("\n\n");
 
-    const { text } = await generateText({
+    // Streamed like every other model call in the planner: a non-streamed turn is silent on the wire
+    // until the model finishes, and a proxy in front of the provider cuts a silent origin off (Cloudflare
+    // answers 524 after ~100s). Consuming the stream still resolves `text` exactly as `generateText` did.
+    const stream = streamText({
         model,
         maxRetries: AI_MAX_RETRIES,
         prompt: `Summarize the following conversation into a compact context that preserves all important state needed to continue the work.
@@ -34,7 +37,7 @@ Write a concise summary that captures:
 Be concise but complete. This summary replaces the full conversation.`,
     });
 
-    return text;
+    return await stream.text;
 }
 
 export function estimateTokens(text: string): number {

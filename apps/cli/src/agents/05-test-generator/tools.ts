@@ -253,9 +253,12 @@ export function buildSpawnResearcherTool(model: LanguageModel, workingDirectory:
             });
 
             try {
-                await subagent.generate({
+                // Streamed like the other subagent: a non-streamed turn is silent on the wire until the model
+                // finishes, which a proxy in front of the provider cuts off.
+                const stream = await subagent.stream({
                     messages: [{ role: "user", content: input.instruction }],
                 });
+                await stream.consumeStream();
                 return { findings: result?.findings ?? "Subagent did not produce findings" };
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
