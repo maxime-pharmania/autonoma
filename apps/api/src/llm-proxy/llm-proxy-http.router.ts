@@ -72,6 +72,91 @@ const ChatCompletionsBodySchema = z
     })
     .passthrough();
 
+type ThinkingCompatRewrite = {
+    /** The body to forward: the input itself whenever nothing was rewritten. */
+    body: Record<string, unknown>;
+    /** Whether LLM_PROXY_THINKING_COMPAT is on, i.e. whether the rewrite was attempted at all. */
+    enabled: boolean;
+    /** Assistant messages that had an empty `reasoning_content` filled in. */
+    adjustedAssistantMessages: number;
+    /** Whether a forced `tool_choice` was replaced with `"auto"`. */
+    toolChoiceReplaced: boolean;
+};
+
+/**
+ * Whether to rewrite forwarded bodies for an upstream in thinking mode (`LLM_PROXY_THINKING_COMPAT`, off by
+ * default: an upstream that is NOT in thinking mode does not expect `reasoning_content` and may reject it,
+ * so the rewrite stays opt-in per deployment). Read from the environment on each request and parsed the
+ * way `env.ts` parses its stringbools, so a value we do not recognize as truthy reads as off rather than
+ * throwing on the request path.
+ */
+function isThinkingCompatEnabled(): boolean {
+    return z.stringbool().catch(false).parse(process.env.LLM_PROXY_THINKING_COMPAT);
+}
+
+/**
+ * Whether a `tool_choice` value pins one tool, in either the current (`{type: "function", function: {...}}`)
+ * or the legacy (`{function: "name"}`) shape.
+ */
+function isForcingToolChoice(toolChoice: unknown): boolean {
+    if (typeof toolChoice !== "object" || toolChoice == null) return false;
+    const choice = toolChoice as { type?: unknown; function?: unknown };
+    return choice.type === "function" || choice.function != null;
+}
+
+function isAssistantMessage(message: unknown): message is Record<string, unknown> {
+    return typeof message === "object" && message != null && (message as { role?: unknown }).role === "assistant";
+}
+
+/**
+ * Rewrite a request body a gateway that runs its upstream in thinking mode rejects twice: a 400 "The
+ * `reasoning_content` in the thinking mode must be passed back to the API" when an assistant message
+ * carries no `reasoning_content`, then a 400 "Thinking mode does not support this tool_choice" when the
+ * request forces `tool_choice: "required"`. Replaying the offending planner body with `tool_choice:
+ * "auto"` plus `reasoning_content: ""` on the assistant message returns 200 SSE, which is what this
+ * reproduces.
+ *
+ * The planner CLI forces `tool_choice: "required"` (apps/cli/src/core/agent.ts,
+ * apps/cli/src/tools/subagent.ts) and the AI SDK never echoes `reasoning_content`, so without this
+ * rewrite every planner call fails against such an upstream.
+ *
+ * A body we cannot rewrite is forwarded untouched rather than dropped: the upstream's own error names
+ * the real problem, whereas a local failure here would be opaque on a request we would otherwise simply
+ * forward. Callers log one debug line per request from the returned counters.
+ */
+export function applyThinkingCompat(body: Record<string, unknown>): ThinkingCompatRewrite {
+    if (!isThinkingCompatEnabled()) {
+        return { body, enabled: false, adjustedAssistantMessages: 0, toolChoiceReplaced: false };
+    }
+    try {
+        // Both upstream errors are about `messages`, so without an array of them there is nothing to fix:
+        // the body goes through exactly as it arrived, `tool_choice` included.
+        const messages: readonly unknown[] | undefined = Array.isArray(body.messages) ? body.messages : undefined;
+        let adjustedAssistantMessages = 0;
+        let toolChoiceReplaced = false;
+        let rewritten = body;
+        if (messages != null) {
+            const rewrittenMessages = messages.map((message) => {
+                // A value the caller already provided is kept, whatever it holds. Only an absent (or
+                // non-string, which the upstream cannot read back) `reasoning_content` is filled in.
+                if (!isAssistantMessage(message) || typeof message.reasoning_content === "string") return message;
+                adjustedAssistantMessages += 1;
+                return { ...message, reasoning_content: "" };
+            });
+            toolChoiceReplaced = body.tool_choice === "required" || isForcingToolChoice(body.tool_choice);
+            rewritten = toolChoiceReplaced
+                ? { ...body, messages: rewrittenMessages, tool_choice: "auto" }
+                : { ...body, messages: rewrittenMessages };
+        }
+        return { body: rewritten, enabled: true, adjustedAssistantMessages, toolChoiceReplaced };
+    } catch (err) {
+        // Not reachable from a JSON-parsed body, but a rewrite must never be the reason a forwardable
+        // request fails - so the body passes through as-is.
+        logger.debug("Thinking-mode compatibility rewrite failed - forwarding the body unchanged", { err });
+        return { body, enabled: true, adjustedAssistantMessages: 0, toolChoiceReplaced: false };
+    }
+}
+
 // Tolerant view over OpenRouter responses (streamed chunks and the non-streamed
 // body) used only to pull the generation id and the usage cost for metering.
 const UsageEnvelopeSchema = z
@@ -156,7 +241,18 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
     // OpenRouter to include usage accounting (incl. dollar cost) so we can meter -
     // for streams this surfaces in a trailing chunk; non-stream in the body.
     const maxTokens = Math.min(parsedBody.data.max_tokens ?? MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
-    const forwardBody = { ...parsedBody.data, max_tokens: maxTokens, usage: { include: true } };
+    // A no-op returning the body untouched unless LLM_PROXY_THINKING_COMPAT is on (see applyThinkingCompat).
+    const thinkingCompat = applyThinkingCompat({ ...parsedBody.data, max_tokens: maxTokens, usage: { include: true } });
+    const forwardBody = thinkingCompat.body;
+    // One line per request (only when the flag is on): what we rewrote, so an upstream 400 about
+    // `tool_choice`/`reasoning_content` can be read against the body we actually sent.
+    if (thinkingCompat.enabled) {
+        logger.debug("Applied thinking-mode compatibility rewrite", {
+            organizationId,
+            adjustedAssistantMessages: thinkingCompat.adjustedAssistantMessages,
+            toolChoiceReplaced: thinkingCompat.toolChoiceReplaced,
+        });
+    }
 
     logger.info("Forwarding to OpenRouter", { organizationId, model, isStreaming });
 
