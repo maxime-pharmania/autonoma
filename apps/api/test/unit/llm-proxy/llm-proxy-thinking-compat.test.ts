@@ -28,6 +28,13 @@ function body(overrides: Record<string, unknown> = {}): Record<string, unknown> 
     };
 }
 
+/**
+ * The directive the rewrite is expected to put in the system message, spelled out rather than imported:
+ * it is the instruction the model reads, so the test pins its exact wording.
+ */
+const FORCED_TOOL_CHOICE_DIRECTIVE =
+    "Respond with exactly one tool call per turn: call a tool on every turn instead of answering with prose, and call the finish tool once the task is complete.";
+
 describe("applyThinkingCompat", () => {
     afterEach(() => {
         withoutThinkingCompat();
@@ -52,6 +59,87 @@ describe("applyThinkingCompat", () => {
         const rewritten = applyThinkingCompat(body({ tool_choice: "auto" }));
         expect(rewritten.body.tool_choice).toBe("auto");
         expect(rewritten.toolChoiceReplaced).toBe(false);
+        expect(rewritten.body.messages).toStrictEqual([{ role: "user", content: "plan this" }]);
+        expect(rewritten.systemDirectiveAdded).toBe(false);
+    });
+
+    it("restates a replaced tool_choice in a system message that carries text", () => {
+        withThinkingCompat("true");
+        const rewritten = applyThinkingCompat(
+            body({
+                tool_choice: "required",
+                messages: [
+                    { role: "system", content: "be terse" },
+                    { role: "user", content: "plan this" },
+                ],
+            }),
+        );
+        expect(rewritten.body.messages).toStrictEqual([
+            { role: "system", content: `be terse\n\n${FORCED_TOOL_CHOICE_DIRECTIVE}` },
+            { role: "user", content: "plan this" },
+        ]);
+        expect(rewritten.toolChoiceReplaced).toBe(true);
+        expect(rewritten.systemDirectiveAdded).toBe(true);
+    });
+
+    it("adds the directive as a text part to a system message built from parts", () => {
+        withThinkingCompat("true");
+        const rewritten = applyThinkingCompat(
+            body({
+                tool_choice: "required",
+                messages: [
+                    {
+                        role: "system",
+                        content: [
+                            { type: "text", text: "be terse" },
+                            { type: "image_url", image_url: { url: "https://example.test/plan.png" } },
+                        ],
+                    },
+                    { role: "user", content: "plan this" },
+                ],
+            }),
+        );
+        expect(rewritten.body.messages).toStrictEqual([
+            {
+                role: "system",
+                content: [
+                    { type: "text", text: "be terse" },
+                    { type: "image_url", image_url: { url: "https://example.test/plan.png" } },
+                    { type: "text", text: FORCED_TOOL_CHOICE_DIRECTIVE },
+                ],
+            },
+            { role: "user", content: "plan this" },
+        ]);
+        expect(rewritten.systemDirectiveAdded).toBe(true);
+    });
+
+    it("inserts a system message when the request carries none", () => {
+        withThinkingCompat("true");
+        const rewritten = applyThinkingCompat(body({ tool_choice: "required" }));
+        expect(rewritten.body.messages).toStrictEqual([
+            { role: "system", content: FORCED_TOOL_CHOICE_DIRECTIVE },
+            { role: "user", content: "plan this" },
+        ]);
+        expect(rewritten.systemDirectiveAdded).toBe(true);
+    });
+
+    it("keeps a system message it cannot extend and inserts the directive before it", () => {
+        withThinkingCompat("true");
+        const rewritten = applyThinkingCompat(
+            body({
+                tool_choice: "required",
+                messages: [
+                    { role: "system", content: { opaque: true } },
+                    { role: "user", content: "plan this" },
+                ],
+            }),
+        );
+        expect(rewritten.body.messages).toStrictEqual([
+            { role: "system", content: FORCED_TOOL_CHOICE_DIRECTIVE },
+            { role: "system", content: { opaque: true } },
+            { role: "user", content: "plan this" },
+        ]);
+        expect(rewritten.systemDirectiveAdded).toBe(true);
     });
 
     it("adds an empty reasoning_content to an assistant message that has none", () => {
@@ -88,6 +176,7 @@ describe("applyThinkingCompat", () => {
         const rewritten = applyThinkingCompat(body({ messages }));
         expect(rewritten.body.messages).toStrictEqual(messages);
         expect(rewritten.adjustedAssistantMessages).toBe(0);
+        expect(rewritten.systemDirectiveAdded).toBe(false);
     });
 
     it("forwards the body untouched while the flag is off", () => {
@@ -101,6 +190,7 @@ describe("applyThinkingCompat", () => {
         expect(result.body).toBe(original);
         expect(Object.keys(result.body)).toStrictEqual(["model", "messages", "tool_choice"]);
         expect(result.body.messages).toStrictEqual([{ role: "assistant", content: "here is my plan" }]);
+        expect(result.systemDirectiveAdded).toBe(false);
     });
 
     it("forwards the body untouched while the flag is unset", () => {
@@ -115,6 +205,7 @@ describe("applyThinkingCompat", () => {
         const result = applyThinkingCompat(original);
         expect(result.body).toBe(original);
         expect(result.toolChoiceReplaced).toBe(false);
+        expect(result.systemDirectiveAdded).toBe(false);
     });
 
     it("forwards the body untouched when messages is absent", () => {
@@ -141,5 +232,6 @@ describe("applyThinkingCompat", () => {
         expect(result.body).toBe(original);
         expect(result.adjustedAssistantMessages).toBe(0);
         expect(result.toolChoiceReplaced).toBe(false);
+        expect(result.systemDirectiveAdded).toBe(false);
     });
 });

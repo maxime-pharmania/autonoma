@@ -97,6 +97,8 @@ type ThinkingCompatRewrite = {
     adjustedAssistantMessages: number;
     /** Whether a forced `tool_choice` was replaced with `"auto"`. */
     toolChoiceReplaced: boolean;
+    /** Whether the system message was given the directive that restates a replaced `tool_choice`. */
+    systemDirectiveAdded: boolean;
 };
 
 /**
@@ -124,6 +126,40 @@ function isAssistantMessage(message: unknown): message is Record<string, unknown
     return typeof message === "object" && message != null && (message as { role?: unknown }).role === "assistant";
 }
 
+function isSystemMessage(message: unknown): message is Record<string, unknown> {
+    return typeof message === "object" && message != null && (message as { role?: unknown }).role === "system";
+}
+
+/**
+ * What a forced `tool_choice` asked for, restated in prose for the upstream that refuses the parameter.
+ * `"auto"` alone reads as "answering in prose is fine", so a thinking-mode model ends its turn with no
+ * tool call; the planner CLI counts that as a stall and spends a whole extra generation on a nudge.
+ */
+const FORCED_TOOL_CHOICE_DIRECTIVE =
+    "Respond with exactly one tool call per turn: call a tool on every turn instead of answering with prose, and call the finish tool once the task is complete.";
+
+/**
+ * The messages to forward once the directive above restates a forced `tool_choice`: it goes on the
+ * system message - appended to string content, or as one more text part when the content is a parts
+ * array, whose other parts are kept verbatim - and a request that carries no system message gets one at
+ * the head. Content of neither shape cannot carry the directive without dropping what the caller sent,
+ * so that message is left alone and the directive travels in a system message of its own.
+ */
+function messagesWithForcedToolChoiceDirective(messages: readonly unknown[]): readonly unknown[] {
+    const directivePart = { type: "text", text: FORCED_TOOL_CHOICE_DIRECTIVE };
+    const systemIndex = messages.findIndex(isSystemMessage);
+    const system = systemIndex === -1 ? undefined : (messages[systemIndex] as Record<string, unknown>);
+    if (system != null && typeof system.content === "string") {
+        const content = `${system.content}\n\n${FORCED_TOOL_CHOICE_DIRECTIVE}`;
+        return messages.map((message, index) => (index === systemIndex ? { ...system, content } : message));
+    }
+    if (system != null && Array.isArray(system.content)) {
+        const content = [...system.content, directivePart];
+        return messages.map((message, index) => (index === systemIndex ? { ...system, content } : message));
+    }
+    return [{ role: "system", content: FORCED_TOOL_CHOICE_DIRECTIVE }, ...messages];
+}
+
 /**
  * Rewrite a request body a gateway that runs its upstream in thinking mode rejects twice: a 400 "The
  * `reasoning_content` in the thinking mode must be passed back to the API" when an assistant message
@@ -136,13 +172,23 @@ function isAssistantMessage(message: unknown): message is Record<string, unknown
  * apps/cli/src/tools/subagent.ts) and the AI SDK never echoes `reasoning_content`, so without this
  * rewrite every planner call fails against such an upstream.
  *
+ * `"auto"` accepts the request but drops the intent the parameter carried, so a replaced `tool_choice`
+ * is restated as the system directive below (see FORCED_TOOL_CHOICE_DIRECTIVE) - the only place an
+ * upstream in thinking mode still lets us ask for one tool call per turn.
+ *
  * A body we cannot rewrite is forwarded untouched rather than dropped: the upstream's own error names
  * the real problem, whereas a local failure here would be opaque on a request we would otherwise simply
  * forward. Callers log one debug line per request from the returned counters.
  */
 export function applyThinkingCompat(body: Record<string, unknown>): ThinkingCompatRewrite {
     if (!isThinkingCompatEnabled()) {
-        return { body, enabled: false, adjustedAssistantMessages: 0, toolChoiceReplaced: false };
+        return {
+            body,
+            enabled: false,
+            adjustedAssistantMessages: 0,
+            toolChoiceReplaced: false,
+            systemDirectiveAdded: false,
+        };
     }
     try {
         // Both upstream errors are about `messages`, so without an array of them there is nothing to fix:
@@ -150,9 +196,10 @@ export function applyThinkingCompat(body: Record<string, unknown>): ThinkingComp
         const messages: readonly unknown[] | undefined = Array.isArray(body.messages) ? body.messages : undefined;
         let adjustedAssistantMessages = 0;
         let toolChoiceReplaced = false;
+        let systemDirectiveAdded = false;
         let rewritten = body;
         if (messages != null) {
-            const rewrittenMessages = messages.map((message) => {
+            let rewrittenMessages: readonly unknown[] = messages.map((message) => {
                 // A value the caller already provided is kept, whatever it holds. Only an absent (or
                 // non-string, which the upstream cannot read back) `reasoning_content` is filled in.
                 if (!isAssistantMessage(message) || typeof message.reasoning_content === "string") return message;
@@ -160,16 +207,26 @@ export function applyThinkingCompat(body: Record<string, unknown>): ThinkingComp
                 return { ...message, reasoning_content: "" };
             });
             toolChoiceReplaced = body.tool_choice === "required" || isForcingToolChoice(body.tool_choice);
+            if (toolChoiceReplaced) {
+                rewrittenMessages = messagesWithForcedToolChoiceDirective(rewrittenMessages);
+                systemDirectiveAdded = true;
+            }
             rewritten = toolChoiceReplaced
                 ? { ...body, messages: rewrittenMessages, tool_choice: "auto" }
                 : { ...body, messages: rewrittenMessages };
         }
-        return { body: rewritten, enabled: true, adjustedAssistantMessages, toolChoiceReplaced };
+        return { body: rewritten, enabled: true, adjustedAssistantMessages, toolChoiceReplaced, systemDirectiveAdded };
     } catch (err) {
         // Not reachable from a JSON-parsed body, but a rewrite must never be the reason a forwardable
         // request fails - so the body passes through as-is.
         logger.debug("Thinking-mode compatibility rewrite failed - forwarding the body unchanged", { err });
-        return { body, enabled: true, adjustedAssistantMessages: 0, toolChoiceReplaced: false };
+        return {
+            body,
+            enabled: true,
+            adjustedAssistantMessages: 0,
+            toolChoiceReplaced: false,
+            systemDirectiveAdded: false,
+        };
     }
 }
 
@@ -267,6 +324,7 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
             organizationId,
             adjustedAssistantMessages: thinkingCompat.adjustedAssistantMessages,
             toolChoiceReplaced: thinkingCompat.toolChoiceReplaced,
+            systemDirectiveAdded: thinkingCompat.systemDirectiveAdded,
         });
     }
 
