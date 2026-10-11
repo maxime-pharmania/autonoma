@@ -154,6 +154,13 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
     logger.info("Forwarding to OpenRouter", { organizationId, model, isStreaming });
 
     let upstream: Response;
+    // This timer bounds the wait for a response, not the response itself. `AbortSignal.timeout` would do
+    // both, and a streamed answer outlives any cap worth setting: a reasoning model on a large prompt
+    // legitimately generates for minutes, and aborting it mid-flight truncates the answer with no
+    // explanation the caller can act on. So the timer is cleared as soon as the headers arrive on a
+    // streamed request - a genuinely stalled upstream is still cut off while it is silent.
+    const upstreamAbort = new AbortController();
+    const headersTimer = setTimeout(() => upstreamAbort.abort(), UPSTREAM_TIMEOUT_MS);
     try {
         upstream = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
             method: "POST",
@@ -164,10 +171,12 @@ llmProxyHttpRouter.post("/chat/completions", async (c) => {
                 "X-Title": "Autonoma Planner",
             },
             body: JSON.stringify(forwardBody),
-            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+            signal: upstreamAbort.signal,
         });
+        // A non-streamed body is read immediately below, so the timer stays armed for it.
+        if (isStreaming) clearTimeout(headersTimer);
     } catch (err) {
-        // Network failure or the timeout above firing. Don't leak detail to the
+        // Network failure or the timer above firing. Don't leak detail to the
         // caller; the detached meter drain (if any) errors on the aborted body.
         logger.error("LLM proxy upstream request failed", { organizationId, model, err });
         return c.json({ error: "upstream_error" }, 502);
