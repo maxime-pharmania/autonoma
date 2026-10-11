@@ -27,7 +27,12 @@ const STEP_TIMEOUT_MS = 0;
 // finish tool rejected with a validation error - or when the model replies
 // with plain text. In both cases no result was captured, so we re-prompt the
 // same conversation a bounded number of times instead of failing the step.
-const MAX_NUDGES = 2;
+//
+// Five rather than two: a reasoning model that has spent a long turn reading
+// files routinely answers with its analysis instead of calling `finish`, and
+// each nudge costs one turn - while giving up costs the whole step, and with it
+// a run that has already paid for every earlier step.
+const MAX_NUDGES = 5;
 const NUDGE_PROMPT =
     "You stopped before completing the task. The task is only complete once the finish tool " +
     "has been called and succeeded. If your last finish call returned an error, fix exactly what " +
